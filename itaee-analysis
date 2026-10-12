@@ -5,7 +5,7 @@ library(ggplot2)
 library(lmtest)
 library(nortest)
 
-datos <- read_excel("data/base.xlsx", skip = 4,n_max=182) #lee la base de datos (sin el último dato para la actualización del pronóstico)
+datos <- read_excel("ITAEE - serie.xls", skip = 4,n_max=182) #lee la base de datos (sin el último dato para la actualización del pronóstico)
 ultimodato <- read_excel("Indicadores20251029145632.xls", range = "B187", col_names = FALSE)[[1]]
 #ultimodato
 head(datos)
