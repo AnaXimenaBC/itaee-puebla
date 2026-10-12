@@ -1,0 +1,390 @@
+library(tseries)
+library(forecast)
+library(readxl)
+library(ggplot2)
+library(lmtest)
+library(nortest)
+
+datos <- read_excel("data/base.xlsx", skip = 4,n_max=182) #lee la base de datos (sin el último dato para la actualización del pronóstico)
+ultimodato <- read_excel("Indicadores20251029145632.xls", range = "B187", col_names = FALSE)[[1]]
+#ultimodato
+head(datos)
+
+original <- ts(datos[[2]], start = c(1980,1), frequency = 4) #serie original
+plot(original, main = "ITAEE, Original", ylab = "Variación %", xlab = "Tiempo", col = "purple", lwd = 2) #gráfica itaee original 
+adf.test(original)  #no rechazamos H0 - no es estacionaria
+lambda <- BoxCox.lambda(original)
+lambda #diferente de 1
+
+originalbox <- BoxCox(original, lambda) #serie original con transformación box-cox
+adf.test(originalbox) #no estacionaria
+plot(originalbox, main = "ITAEE, Original con Box Cox", ylab = "Variación %", xlab = "Tiempo", col = "black", lwd = 2) #gráfica itaee con box cox
+
+outliersog <- tsoutliers(original) #para checar valores atipicos
+outliersog
+#?tsclean
+sinatipico <- tsclean(original,replace.missing = TRUE) #quitar el valor atipico
+plot(sinatipico, main = "ITAEE, sin valor atípico", ylab = "Variación %", xlab = "Tiempo", col = "lightpink", lwd = 2) #itaee sin valor atipico
+
+acf(sinatipico, main = "ACF de la serie ITAEE sin valor atípico", xlab = 'Retraso') #ACF
+pacf(sinatipico, main = "PACF de la serie ITAEE sin valor atípico", xlab = 'Retraso', ylab = 'ACF parcial') #PACF
+
+###una diferencia, sin box cox
+diffsinatipico <- diff(sinatipico)
+plot(diffsinatipico, main = "ITAEE, sin valor atípico, una diferencia", 
+     ylab = "Variación %", xlab = "Tiempo", col = "purple", lwd = 2)
+acf(diffsinatipico, main="ACF (ITAEE, sin valor atípico, una diferencia)", xlab = 'Retraso')
+pacf(diffsinatipico, main="PACF (ITAEE, sin valor atípico, una diferencia)", xlab = 'Retraso', ylab = 'ACF parcial' )
+adf.test(diffsinatipico) #estacionaria a nivel 0.01
+#a pesar de que es estacionaria, podemos observar que la varianza va incrementando
+#por lo que procedemos a usar box cox
+
+###box cox
+lambda <- BoxCox.lambda(sinatipico)
+lambda #aún es diferente de 1
+sinatipicobox <- BoxCox(sinatipico, lambda)
+plot(sinatipicobox, main = "ITAEE, sin valor atípico, con Box Cox", 
+     ylab = "Variación %", xlab = "Tiempo", col = "lightpink", lwd = 2)
+
+
+###una diferencia, con box cox
+diffbox <- diff(sinatipicobox)
+plot(diffbox, main = "ITAEE, sin valor atípico, con Box Cox, una diferencia", 
+     ylab = "Variación %", xlab = "Tiempo", col = "black", lwd = 2)
+#vemos que mejora la varianza
+acf(diffbox, main="ACF (ITAEE, sin valor atípico, con Box Cox, una diferencia)", xlab = 'Retraso')
+pacf(diffbox, main="PACF (ITAEE, sin valor atípico, con Box Cox, una diferencia)", xlab = 'Retraso', ylab = 'ACF parcial')
+adf.test(diffbox) #estacionaria a nivel 0.01
+
+#autoarima solo para probar
+testconbox <-auto.arima(sinatipicobox, seasonal = FALSE, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+summary(testconbox)
+
+#varianza residual es muchísimo menor, errores más pequeños
+#aic y bic son menores, mejor ajuste
+
+#### Verificacion de supuestos ####
+verificar8 <- function(modelo){
+  res <- residuals(modelo)
+  cat("\n1) ERRORES DE MEDIA CERO (t-test)")
+  cat("\n ---------------------------------- \n")
+  print(t.test(res, mu = 0))
+  
+  cat("\n2) VARIANZA CONSTANTE")
+  cat("\n ---------------------------------- \n")
+  
+  # breusch pagan
+  tiempo <- 1:length(res)
+  lm_aux <- lm(res ~ tiempo)
+  print(bptest(lm_aux))
+  
+  #rresiduos vs tiempo
+  print(
+    ggplot(data.frame(tiempo, res), aes(tiempo, res), xlab = 'Tiempo', ylab = 'Residuos') +
+      geom_point() + geom_smooth(se = FALSE, col="red") +
+      ggtitle("Residuos vs Tiempo (Homoscedasticidad)") + xlab('Tiempo') + ylab('Residuos') +
+      theme_minimal()
+  )
+  
+  
+  cat("\n3) NORMALIDAD DE LOS ERRORES")
+  cat("\n ---------------------------------- \n")
+  
+  #anderson-darling
+  print(ad.test(res))
+  
+  #histograma
+  print(
+    ggplot(data.frame(res), aes(x = res)) +
+      geom_histogram(bins = 20, fill="skyblue", color="black") +
+      ggtitle("Histograma de residuos") +
+      xlab("Residuos") +
+      ylab("Cuenta") +
+      theme_minimal()
+  )
+  
+  #qq plot
+  qqnorm(res, xlab = 'Residuos', ylab = 'Cuenta', main = 'Gráfica Q-Q Plot'); qqline(res, col="red", lwd=2)
+  
+  cat("\n4) INDEPENDENCIA DE ERRORES")
+  cat("\n ---------------------------------- \n")
+  
+  print(Box.test(res, lag = 20, type="Ljung-Box"))
+  print(Box.test(res, lag = 20, type="Box-Pierce"))
+  
+  print(ggAcf(res) + ggtitle("ACF de los residuos") + theme_minimal())
+  print(ggPacf(res) + ggtitle("PACF de los residuos") + theme_minimal())
+  
+  cat("\n5) PARSIMONIA")
+  cat("\n ---------------------------------- \n")
+  
+  print("Intervalos de confianza de los parámetros:")
+  print(confint(modelo))
+  
+  cat("\nAIC / BIC:\n")
+  print(AIC(modelo))
+  print(BIC(modelo))
+  
+  cat("\n6) MODELO ADMISIBLE")
+  cat("\n ---------------------------------- \n")
+  
+  # estacionariedad/invertibilidad
+  print("Raíces del polinomio AR (estacionariedad):")
+  print(Mod(polyroot(c(1, -modelo$model$phi))))
+  
+  print("Raíces del polinomio MA (invertibilidad):")
+  print(Mod(polyroot(c(1, modelo$model$theta))))
+  
+  #verificación región admisible para 1d0 2d0 1d1 0d1 0d2
+  p <- modelo$arma[1]; d <- modelo$arma[6]; q <- modelo$arma[2]
+  if(p <= 2 & q <= 2){  
+    cat("\nsí se puede ver\n")
+  } else {
+    cat("\nModelo fuera del rango (p,d,q)\n")
+  }
+  
+  cat("\n7) MODELO ESTABLE")
+  cat("\n ---------------------------------- \n")
+  
+  # Correlación entre parámetros
+  mat_cor <- solve(modelo$var.coef)
+  cat("Correlaciones entre parámetros:\n")
+  print(cov2cor(modelo$var.coef))
+  
+  cat("\n8) OUTLIERS E INFLUENCIA")
+  cat("\n ---------------------------------- \n")
+  
+  #residuos estándar
+  res_std <- res / sd(res)
+  plot(res_std, type="h", main="Residuos estandarizados")
+  
+  #residuos studentizados
+  library(MASS)
+  res_stud <- rstudent(lm_aux)
+  plot(res_stud, type="h", main="Residuos studentizados")
+  
+  #distancia de cook
+  cooks <- cooks.distance(lm_aux)
+  plot(cooks, type="h", main="Distancia de Cook", xlab = 'Tiempo', ylab = 'Residuos')
+  abline(h = 4/length(cooks), col="red", lwd=2)
+  
+  cat("\nfin\n")
+}
+
+testoriginal <- auto.arima(original, seasonal = FALSE, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+summary(testoriginal)
+verificar8(testoriginal) #distancia de cook muestra un punto demasiado influyente
+# al igual que en residuos, histograma se ve mal etc etc
+
+#?Arima
+
+#####modelo 1: arima 0 1 1, con drift, sin box cox, sin valor atipico
+testsinbox <- Arima(sinatipico, order=c(0,1,1),include.drift=TRUE)
+summary(testsinbox)
+# 0 1 1
+verificar8(testsinbox)
+vcov(testsinbox)
+
+############modelo 3: autoarima con box cox, sin valor atipico
+# 0 1 1
+summary(testconbox)
+verificar8(testconbox)
+vcov(testconbox)
+
+#si no podemos usar drift, dos diferencias dan media en errores de cero
+#test121 <- Arima(sinatipicobox, order=c(1,2,1))
+#verificar8(test121)
+
+#prueba sin drift para 0 1 1
+#test011 <- Arima(sinatipicobox, order=c(0,1,1))
+#verificar8(test011)
+
+#prueba sin drift para 1 1 1
+#test111sin <- Arima(sinatipicobox, order=c(1,1,1))
+#verificar8(test111sin)
+
+#prueba con drift para 1 1 1, sin box cox
+#test111condriftsinbox <- Arima(sinatipico, order=c(1,1,1), include.drift=TRUE)
+#verificar8(test111condriftsinbox)
+#summary(test111condriftsinbox)
+
+##############modelo 2: con box cox, con drift, para 1 1 1 
+test111condriftconbox <- Arima(sinatipicobox, order=c(1,1,1), include.drift=TRUE)
+verificar8(test111condriftconbox)
+summary(test111condriftconbox)
+vcov(test111condriftconbox)
+
+#############PRONOSTICO OPTIMO
+pronoptimo <- function(fit, h = 1) {
+  
+  #parámetros del modelo
+  coefs <- fit$coef #coeficientes del modelo ARIMA
+  p <- fit$arma[1] #AR
+  d <- fit$arma[6] #I
+  q <- fit$arma[2] #MA
+  
+  #guardar terminos ar y ma
+  phi <- if(p > 0) coefs[1:p] else numeric(0)
+  theta <- if(q > 0) coefs[(p+1):(p+q)] else numeric(0)
+  
+  y <- fit$x # serie para ajustar el modelo
+  res <- residuals(fit) # residuos
+  
+  if(d > 0) {
+    w <- diff(y, differences = d) # serie diferenciada
+  } else {
+    w <- y # si no hay diferencias, usar la serie original
+  }
+  
+  n <- length(w) # longitud de la serie diferenciada
+  wf <- numeric(h) # vector para pronósticos
+  
+  for(k in 1:h) {
+    pred <- 0 # inicializa predicción del paso k
+    
+    #parte AR
+    if(p > 0) {
+      for(i in 1:p) {
+        if(k - i > 0) {
+          pred <- pred + phi[i] * wf[k - i] # usa pronósticos ya calculados (si es que hay)
+        } else if(n + k - i > 0) {
+          pred <- pred + phi[i] * w[n + k - i] #usa últimos valores de la serie
+        }
+      }
+    }
+    
+    #parte MA
+    if(q > 0) {
+      for(j in 1:q) {
+        if(k - j > 0) {
+          pred <- pred + theta[j] * 0 # E(error futuro) = 0
+        } else if(length(res) + k - j > 0) {
+          pred <- pred + theta[j] * res[length(res) + k - j]  #errores pasados
+        }
+      }
+    }
+    wf[k] <- pred  # guardar el pronóstico del paso k
+  }
+  
+  if(d == 0) {
+    y_hat <- wf # sin diferenciación, el pronóstico ya está en la escala original
+  } else if(d == 1) {
+    y_hat <- numeric(h)
+    y_last <- tail(y,1) # último valor original de la serie
+    for(k in 1:h) {
+      y_hat[k] <- y_last + sum(wf[1:k])  # sumar las diferencias acumuladas
+    }
+  } else if(d == 2) {
+    dy_last <- y[length(y)] - y[length(y)-1]  # última diferencia
+    y_last <- y[length(y)]
+    y_hat <- numeric(h)
+    for(k in 1:h) {
+      y_hat[k] <- y_last + k*dy_last + sum((k:1) * wf[1:k])  # reintegrar segunda diferencia
+    }
+  }
+  return(y_hat)  #devolver vector con los pronósticos
+}
+
+pronostico10p <- pronoptimo(testconbox, h = 10)
+pronostico10p
+
+forecast(testconbox, h=3)
+pron <- forecast(testconbox, h = 3, lambda = 0.5170746, biasadj = TRUE)
+pron
+####################
+
+# Función para corrección de sesgo Box-Cox
+correccion_boxcox <- function(y_hat, var_e, lambda) {
+  if(lambda == 0) {
+    return(exp(var_e / 2))
+  } else {
+    term <- 1 + lambda * y_hat
+    correc <- (0.5 + ((sqrt(1-(2*lambda*(lambda-1)*var_e)/term^2))/2))^(1/lambda)
+    return(correc)
+  }
+}
+
+pronoriginal <- function(fit, h = 10, lambda = 0, alpha = 0.05) { #damos horizonte, lambda y significancia
+  y_hat <- pronoptimo(fit, h = h) #pronostico transformado
+  sigma2 <- var(residuals(fit))            #varianza de residuos
+  
+  p <- fit$arma[1] #obtiene p y q (arima(p,d,q) )
+  q <- fit$arma[2]
+  
+  phi <- if (p > 0) fit$coef[1:p] else numeric(0) #obtiene phis y thetas
+  theta <- if (q > 0) fit$coef[(p+1):(p+q)] else numeric(0)
+  
+  #calcular psis
+  psi <- numeric(h)
+  psi0 <- 1   #psi0 = 1
+  
+  for (j in 1:h) {
+    sum_phi_psi <- 0
+    if (p > 0) {
+      for (i in 1:p) {
+        if (j - i > 0) {
+          sum_phi_psi <- sum_phi_psi + phi[i] * psi[j - i]
+        } else if (j - i == 0) {
+          sum_phi_psi <- sum_phi_psi + phi[i] * psi0
+        }
+      }
+    }
+    
+    theta_j <- if (q > 0 && j <= q) theta[j] else 0
+    psi[j] <- theta_j + sum_phi_psi
+  }
+  
+  ##psis para varianza de error
+  psi_full <- c(psi0, psi) #incluimos psi0
+  var_e_h <- sigma2 * cumsum(psi_full[1:h]^2)
+  
+  #correccion de box cox, en funcion arriba
+  correc <- mapply(correccion_boxcox, y_hat, var_e_h, MoreArgs = list(lambda = lambda))
+  
+  ###calcular la inversa por la correccion
+  pron <- if (lambda == 0) {
+    exp(y_hat) * correc
+  } else {
+    (1 + lambda * y_hat)^(1/lambda) * correc
+  }
+  
+  ###intervalos de prediccion
+  z_alpha <- qnorm(1 - alpha/2)
+  IC_lower <- numeric(h)
+  IC_upper <- numeric(h)
+  
+  for (i in 1:h) {
+    yl <- y_hat[i] - z_alpha * sqrt(var_e_h[i])
+    yu <- y_hat[i] + z_alpha * sqrt(var_e_h[i])
+    
+    if (lambda == 0) {
+      IC_lower[i] <- correc[i] * exp(yl)
+      IC_upper[i] <- correc[i] * exp(yu)
+    } else {
+      IC_lower[i] <- correc[i] * (1 + lambda * yl)^(1/lambda)
+      IC_upper[i] <- correc[i] * (1 + lambda * yu)^(1/lambda)
+    }
+  }
+  
+  return(list(pron = pron, IC = cbind(IC_lower, IC_upper), psi = psi))
+}
+
+
+res <- pronoriginal(testconbox, h = 10, lambda = 0.5170746)
+
+res$IC    # intervalos de predicción
+res$pron  # pronósticos
+res$psi
+
+residual_t1 <- ultimodato - res$pron[1]  # residual en t+1
+horizonte <- length(res$pron) - 1  # si res$pron tiene h=10, esto da 9 pasos futuros
+pron_actualizados <- numeric(horizonte)
+
+for (h in 1:horizonte) { #para actualiazcion de pronóstico
+  pron_actualizados[h] <- res$pron[h+1] + res$psi[h] * residual_t1
+}
+pron_actualizados <- c(ultimodato, pron_actualizados) #agregamos la observación a los pronósticos actualizados
+pron_actualizados
+
+fc <- forecast(testconbox, h = 10, lambda = lambda, biasadj = TRUE) #probamos con la función forecast() para comparar
+fc
